@@ -1,0 +1,9 @@
+*.pyc
+*.pyo
+/build/
+dist/
+*.orig
+tox.ini
+.venv
+*.egg-info
+.coverage
