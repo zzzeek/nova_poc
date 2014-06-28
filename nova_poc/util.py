@@ -1,25 +1,23 @@
 import cProfile
-import StringIO
 import pstats
 import contextlib
 import time
 
 
 @contextlib.contextmanager
-def profiled():
+def profiled(dump=False):
     result = [-1]
     pr = cProfile.Profile()
     pr.enable()
     yield result
     pr.disable()
-    ps = pstats.Stats(pr)
-    result[0] = ps.total_calls
 
-    # s = StringIO.StringIO()
-    # ps = pstats.Stats(pr, stream=s)
-    # ps.sort_stats('cumulative')
-    # ps.print_stats()
-    # ps.print_callers()
+    ps = pstats.Stats(pr)
+    if dump:
+        ps.sort_stats('cumulative')
+        ps.print_stats()
+        # ps.print_callers()
+    result[0] = ps.total_calls
 
 @contextlib.contextmanager
 def timeit():

@@ -38,6 +38,19 @@ def _floating_ip_get_by_address(context, address, session,
                     filter_by(address=address)
 
     if load_instances:
+        # the current source for _floating_ip_get_by_address includes
+        # an unconditional joinedload two levels deep.    In the case
+        # of floating_ip_update and most likely floating_ip_fixed_ip_associate,
+        # the rows returned and processed by these joins are not used.
+        #
+        # The overhead of this joinedload is by far the biggest hindrance
+        # to the performance of these two API functions - it multiplies the
+        # measured function call count / time spent by a factor of twelve.
+        # So getting rid of eager loads that aren't needed is a very easy
+        # and effective way to regain significant speed.  In this case,
+        # _floating_ip_get_by_address should accept a flag as to whether
+        # the extended load of ->fixed_ip->instance is needed or not.
+
         if use_baked:
             result.bake(lambda query:
                 query.options(joinedload_all('fixed_ip.instance')))

@@ -19,13 +19,15 @@ def run_test(updater, all_ips, num):
         del updated['address']
         updater(fixture.ctx, existing_address, updated)
 
-def run_scenario(scenario, num):
+_all_scenarios = ["all", "default", "default_optimized",
+                        "fast_save", "baked", "fast_save_plus_baked"]
+
+def run_scenario(scenario, single=False, num=10000):
     if scenario == 'all':
-        run_scenario("default", num)
-        run_scenario("default_optimized", num)
-        run_scenario("fast_save", num)
-        run_scenario("baked", num)
-        run_scenario("fast_save_plus_baked", num)
+        for scen in _all_scenarios:
+            if scen == 'all':
+                continue
+            run_scenario(scen, single, num)
         return
 
     print("Running scenario %s" % scenario)
@@ -46,7 +48,7 @@ def run_scenario(scenario, num):
 
     data = list(ip for ip, in
                     fixture.get_session().query(api.models.FloatingIp.address))
-    def go():
+    def go(num):
         run_test(
             functools.partial(
                 api.floating_ip_update,
@@ -58,13 +60,22 @@ def run_scenario(scenario, num):
             data,
             num
         )
-    with util.profiled() as result:
-        go()
-    print("Scenario %s, total calls %d" % (scenario, result[0]))
 
-    with util.timeit() as result:
-        go()
-    print("Scenario %s, total time %d" % (scenario, result[0]))
+    if single:
+        with util.profiled(dump=True) as result:
+            go(100)
+        print("Scenario %s, total calls for %d operations: %d" %
+            (scenario, 100, result[0]))
+    else:
+        with util.profiled() as result:
+            go(num / 10)
+        print("Scenario %s, total calls for %d operations: %d" %
+            (scenario, num / 10, result[0]))
+
+        with util.timeit() as result:
+            go(num)
+        print("Scenario %s, total time for %d operations: %d" %
+            (scenario, num, result[0]))
 
 
 def main(argv=None):
@@ -82,15 +93,12 @@ def main(argv=None):
                 default="all",
                 help="scenario to run")
 
-    parser.add_argument("--num",
-                type=int,
-                default=10000,
-                help="size of dataset to run on")
-
+    parser.add_argument("--single", action="store_true",
+                help="Run only 100 iterations and dump out the Python profile")
     options = parser.parse_args(argv)
 
     setup_for_scenarios(options.db, options.log, 10000)
-    run_scenario(options.scenario, options.num)
+    run_scenario(options.scenario, options.single)
 
 if __name__ == '__main__':
     main()
