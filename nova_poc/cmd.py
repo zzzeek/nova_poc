@@ -22,27 +22,31 @@ def run_test(updater, all_ips, num):
 def run_scenario(scenario, num):
     if scenario == 'all':
         run_scenario("default", num)
+        run_scenario("default_optimized", num)
         run_scenario("fast_save", num)
         run_scenario("baked", num)
+        run_scenario("fast_save_plus_baked", num)
         return
 
     print("Running scenario %s" % scenario)
 
     ip_addr_kw = dict(load_instances=True, use_first=True, use_baked=False)
 
-    if scenario == "default":
-        saver = api.existing_save
-    else:
+    if scenario != "default":
         ip_addr_kw['load_instances'] = False
         ip_addr_kw['use_first'] = False
-        saver = fast_save.fast_save
 
-    if scenario == 'baked':
+    if scenario in ("fast_save", "fast_save_plus_baked"):
+        saver = fast_save.fast_save
+    else:
+        saver = api.existing_save
+
+    if scenario in ("baked", "fast_save_plus_baked"):
         ip_addr_kw['use_baked'] = True
 
     data = list(ip for ip, in
                     fixture.get_session().query(api.models.FloatingIp.address))
-    with util.profiled() as result:
+    def go():
         run_test(
             functools.partial(
                 api.floating_ip_update,
@@ -54,8 +58,13 @@ def run_scenario(scenario, num):
             data,
             num
         )
+    with util.profiled() as result:
+        go()
     print("Scenario %s, total calls %d" % (scenario, result[0]))
 
+    with util.timeit() as result:
+        go()
+    print("Scenario %s, total time %d" % (scenario, result[0]))
 
 
 def main(argv=None):
@@ -68,7 +77,8 @@ def main(argv=None):
                 help="enable SQL logging")
 
     parser.add_argument("--scenario",
-                choices=["all", "default", "fast_save", "baked"],
+                choices=["all", "default", "default_optimized",
+                        "fast_save", "baked", "fast_save_plus_baked"],
                 default="all",
                 help="scenario to run")
 
@@ -79,7 +89,7 @@ def main(argv=None):
 
     options = parser.parse_args(argv)
 
-    setup_for_scenarios(options.db, options.log, options.num)
+    setup_for_scenarios(options.db, options.log, 10000)
     run_scenario(options.scenario, options.num)
 
 if __name__ == '__main__':
