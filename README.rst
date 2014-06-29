@@ -11,7 +11,7 @@ Win #1 - Tune Eager Loads (and loading overall)
 ------------------------------------------------
 
 The first win, which is by far the easiest, is to tune the use of eager loads.
-There is no doubt that Nova and Openstack developers are deeply familiar with
+There is no doubt that Openstack developers are deeply familiar with
 SQLAlchemy's eager loading feature, and overall most use of SQLAlchemy I have
 seen in Openstack is at a fully expert level.   The purpose of illustrating the
 performance overhead of one particular eagerload that I found in this method is not
