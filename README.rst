@@ -5,7 +5,7 @@ In this proof of concept we illustrate some techniques to improve upon
 ORM performance in certain situations.     We focus on a single method
 in the Nova API, ``floating_ip_update()``.
 
-See the Wiki entry at `ORM Quick Wins Proof of Concept <>`_ for an introduction.
+See the Wiki entry at `ORM Quick Wins Proof of Concept <https://wiki.openstack.org/wiki/Openstack_and_SQLAlchemy>`_ for an introduction.
 
 Win #1 - Tune Eager Loads (and loading overall)
 ------------------------------------------------
