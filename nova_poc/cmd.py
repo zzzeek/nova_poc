@@ -88,8 +88,7 @@ def main(argv=None):
                 help="enable SQL logging")
 
     parser.add_argument("--scenario",
-                choices=["all", "default", "default_optimized",
-                        "fast_save", "baked", "fast_save_plus_baked"],
+                choices=_all_scenarios,
                 default="all",
                 help="scenario to run")
 
