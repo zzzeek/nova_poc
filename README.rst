@@ -5,42 +5,7 @@ In this proof of concept we illustrate some techniques to improve upon
 ORM performance in certain situations.     We focus on a single method
 in the Nova API, ``floating_ip_update()``.
 
-Introduction
-------------
-
-The Nova API, and probably the APIs of a lot of the other openstack
-libraries, present a performance challenge not just to ORMs but
-to a relational backend in general.  These APIs are presented as a series of many fine-
-grained methods, each of which operates with its own database transaction
-and Session.  This pattern works against the ORM Session's strengths, which are
-oriented towards building up a complex graph of objects in a transaction
-that can be manipulated and transparently synchronized with a relational
-database with great accuracy.  Instead, with many small and isolated API
-methods we see lots of individual Session objects spinning up, loading a few
-rows from several tables, and then flushing out some of those rows, in
-many cases just one of them, in the form of a single INSERT or UPDATE.
-
-The Openstack app overall may be calling upon many API methods to
-accomplish one task, but due to the fine-grained nature of the API, a
-complex operation ends up being fragmented over many short-lived
-transactions. This is not just difficult for ORMs but for relational
-databases overall. Fetching many individual rows from disparate tables
-in order to build up a structure is very time consuming, compared to a
-similar case against a document store like MongoDB which can represent
-all of that same data in a single document, which can be fetched with
-lower latency than just one of those relational rows.  Breaking the
-operation into many small transactions means that rows tend to be
-loaded on a key-by-key basis, rather than being able to pull in all
-the rows that will be needed for a complex operation at once.
-
-This pattern is not only one that is present in Openstack, it is common
-and in fact just came up on the mailing list the other day.   To the
-degree the SQLAlchemy can be improved to better adapt to this situation
-in Openstack, it will provide patterns and clarity to the community overall.
-
-The proof of concept here will illustrate three wins that can be achieved
-in Nova and other Openstack applications very expediently, with no significant
-changes to application structure.
+See the Wiki entry at `ORM Quick Wins Proof of Concept <>`_ for an introduction.
 
 Win #1 - Tune Eager Loads (and loading overall)
 ------------------------------------------------
@@ -55,7 +20,15 @@ instead I want to illustrate just how dramatic the performance difference there
 is when applying unused eager loads to this "many short hits" API pattern.
 In my testing here, I illustrate that 10K calls to ``floating_ip_update()``
 goes from 24 million Python function calls down to 1.9 million, just by
-taking out an unneeded ``joinedload_all()``.
+taking out an unneeded ``joinedload_all()``::
+
+	Running scenario default
+	Scenario default, total calls for 1000 operations: 24543047
+	Scenario default, total time for 10000 operations: 222
+
+	Running scenario default_optimized
+	Scenario default_optimized, total calls for 1000 operations: 1881626
+	Scenario default_optimized, total time for 10000 operations: 25
 
 Besides eager loading, it's important to be aware of when full object
 instances aren't needed at all.  An API method that wishes to return some
@@ -93,8 +66,9 @@ dictionary, this pattern would dramatically reduce latency.
 Win #2 - Persist Objects Directly without the Unit of Work
 ----------------------------------------------------------
 
-For the second win, we explore a pattern that is intrinsic to the Openstack
-API approach, which is that there are a lot of short "save this object" methods.
+This second win was oddly not as dramatic as I'd hoped, however it is helpful
+and easy to implement nonetheless.   Openstack applications seem to rely a
+lot on a pattern that involves short "save this object" methods.
 When I first looked at oslo.db and saw that there is actually a ``.save()`` method
 tacked onto the base model class.   This pattern is one that I mention a lot
 in my talks, as I'm trying to sell the unit of work pattern as a more sophisticated
@@ -102,57 +76,141 @@ and powerful pattern.   But when the application is already broken into a series
 of quick hits inside of separate transactions, the unit of work pattern becomes
 more of a hindrance.
 
-Unit of work has to deal with very elaborate scenarios, where a single
-object represents rows in multiple tables at once, referring to other
-collections and references that refer to many more rows, all of which
-must be inserted/deleted and sometimes updated in very specific
-orders, all  the while maintaining synchrony between foreign keys and
-database-generated primary keys between rows, as well as between
-what's known to be in the database vs. what's represented in the
-Session.   To achieve this, it builds up a structure representing
-everything that needs to be flushed, operates upon all members and
-relationships between all those objects, sorts everything, then runs
-through to emit all the SQL and synchronize between relationships as
-it goes.
+The unit of work is a sophisticated pattern of automation which knows how to
+handle the persistence of extremely complicated graphs of interconnected
+objects.   It does this job very well and it does it in a highly performant
+way compared to how many curveballs it knows how to deal with, but if your method
+needs to just UPDATE or INSERT a single row, or maybe a handful of simple rows,
+then commit the whole transaction, the UOW can be overkill.
 
-When a method is using a Session just to INSERT or UPDATE a single row only,
-this is all overhead that is pretty wasteful.   I went through Nova's API
-and found that lots of methods really only operate upon a single row on the
-write side, though lots of others still do rely upon the unit of work to
-synchronize and flush related items.  I did this by universally setting
-all ``relationship()`` structures to viewonly=True and running tests, and
-after observing dozens of failures, tried to pick apart a subset of relationships
-that are needed for persistence.  Suffice to say that while Nova doesn't
-need relationship-level persistence in all cases, it still relies heavily on the
-advanced nature of ``relationship()`` and unit of work in many areas.
+So for the quick "Save this object" pattern I've proposed the
+`single flush_object() <https://bitbucket.org/zzzeek/sqlalchemy/issue/3100/sessionflush_object>`_,
+feature for SQLAlchemy.   A function that has a small number of simple objects
+to persist can call this method, and a trimmed down persist operation will take
+place, bypassing the whole mechanics of flush and unit of work and going directly
+to the mapper object's system of persisting a single object.  The mechanics of
+attribute history, mapper events, and updating only those columns that have changed
+can remain in place (or not, if we really want to cut out Python overhead).
 
-However, in a function like ``floating_ip_update()``, it's really just emitting
-UPDATE for a single row.  Other functions that need to insert/update multiple rows
-could similarly be slightly restructured to make each row explicit, rather than
-going through the full UOW process.
+Applying the "single flush object" pattern as implemented in the POC shows approximately a
+12% improvement in call count overhead::
 
-To that end, I've proposed a new SQLAlchemy feature,
-`Single flush_object() <https://bitbucket.org/zzzeek/sqlalchemy/issue/3100/sessionflush_object>`_,
-which for previous versions of SQLAlchemy can be expressed using a new oslo.db
-feature which pulls into semi-private SQLAlchemy APIs.   This system
-would be provided as a variant of the existing ``object.save()`` approach
-used by Nova and other Openstack APIs, for the case when only a single object
-needs to be persisted (again noting, relationship persistence is one of the key
-things that is skipped here).  The demonstration program illustrates this
-recipe as applied to ``floating_ip_update()`` and it
+	Running scenario default_optimized
+	Scenario default_optimized, total calls for 1000 operations: 1881626
+	Scenario default_optimized, total time for 10000 operations: 25
+
+	Running scenario fast_save
+	Scenario fast_save, total calls for 1000 operations: 1685221
+	Scenario fast_save, total time for 10000 operations: 22
+
+Not that much!  But for those cases where ``object.save()`` is being used and there
+is little to no reliance upon expensive relationship-persistence mechanics (e.g. if you can assign
+``mychild.foo_id = myparent.id`` rather than getting the unit of work to do it
+for you), this can save you some CPU.   Emitting an INSERT or UPDATE directly
+is an option as well, which would save on some more overhead.  There's no issue
+doing this while still using the ORM, especially for very simple operations
+where the persist operation is the last thing performed.
+
+Win #3 - Cache the construction of queries, rendering of SQL, result metadata using Baking
+------------------------------------------------------------------------------------------
+
+Something that has been in the works for a long time and has recently
+seen lots of work in the past months is the "baked query" feature; this
+pattern is ideal for Openstack's "many short queries" pattern, and allows
+caching of the generation of SQL.  Recent versions of this pattern have
+gotten very slick, and can cache virtually everything that happens Python-wise
+from the construction of the ``Query`` object, to calling all the methods
+on the query, to the query-objects construction of a Core SQL statement,
+to the compilation of that statement as a string - all of these steps
+are removed from the call-graph after the first such call.  In SQLAlchemy 1.0
+I've also thrown in the construction of column metadata from the result set
+too.   The pattern involves a bit more verbosity to that of constructing a
+query, where here I've built off of some of the ideas of the
+Pony ORM to use Python function information as the source of a cache key.
+A query such as::
+
+    result = model_query(
+                context, models.FloatingIp, session=session).\
+                filter_by(address=address)
+
+would be expressed in "baked" form as::
+
+	# note model_query is using the "baked" process internally as well
+    result = model_query(context, models.FloatingIp, session=session)
+
+    result.bake(lambda query:
+        query.filter_by(
+            address=bindparam('address'))).params(address=address)
+
+In the above form, everything within each lambda is invoked only once,
+the result of which becomes part of a cached value.
+
+For this slight increase in verbosity, we get an improvement like this::
+
+	Running scenario default_optimized
+	Scenario default_optimized, total calls for 1000 operations: 1881626
+	Scenario default_optimized, total time for 10000 operations: 25
+
+	Running scenario baked
+	Scenario baked, total calls for 1000 operations: 1052935
+	Scenario baked, total time for 10000 operations: 16
+
+That is, around a 40% improvement.
+
+Putting together both "fast save" plus "baked" we get down to a full 50%
+improvement vs. the plain optimized version::
+
+	Running scenario fast_save_plus_baked
+	Scenario fast_save_plus_baked, total calls for 1000 operations: 856035
+	Scenario fast_save_plus_baked, total time for 10000 operations: 13
+
+Running the POC
+===============
+
+The app install using usual ``setup.py`` tools, however the "nova" requirement
+must be installed manually (I'm not sure of the best way to do this)::
+
+	virtualenv /path/to/venv
+	cd /path/to/nova
+	/path/to/venv/bin/pip install -e .   # installs nova in venv
+	cd /path/to/nova_poc
+	/path/to/venv/bin/pip install -e .   # installs nova-poc in venv
+
+Then there's a command line script::
+
+	/path/to/venv/bin/nova-poc --help
+
+	usage: nova-poc [-h] [--db DB] [--log]
+	                [--scenario {all,default,default_optimized,fast_save,baked,fast_save_plus_baked}]
+	                [--single]
+
+	optional arguments:
+	  -h, --help            show this help message and exit
+	  --db DB               database URL
+	  --log                 enable SQL logging
+	  --scenario {all,default,default_optimized,fast_save,baked,fast_save_plus_baked}
+	                        scenario to run
+	  --single              Run only 100 iterations and dump out the Python
+	                        profile
 
 
+A full default run will look, with variation, something like the following::
 
-
-
-
-
-
-
-
-
-
-
-
-
-
+	$ .venv/bin/nova-poc
+	tables created
+	inserted 10000 sample floatingIP records
+	Running scenario default
+	Scenario default, total calls for 1000 operations: 24590500
+	Scenario default, total time for 10000 operations: 222
+	Running scenario default_optimized
+	Scenario default_optimized, total calls for 1000 operations: 1919669
+	Scenario default_optimized, total time for 10000 operations: 24
+	Running scenario fast_save
+	Scenario fast_save, total calls for 1000 operations: 1723228
+	Scenario fast_save, total time for 10000 operations: 22
+	Running scenario baked
+	Scenario baked, total calls for 1000 operations: 1176846
+	Scenario baked, total time for 10000 operations: 17
+	Running scenario fast_save_plus_baked
+	Scenario fast_save_plus_baked, total calls for 1000 operations: 980035
+	Scenario fast_save_plus_baked, total time for 10000 operations: 14

@@ -24,7 +24,7 @@ setup(name='nova_poc',
     zip_safe=False,
     install_requires=requires,
     entry_points={
-        'console_scripts': ['nova-poc = nova_poc.main']
+        'console_scripts': ['nova-poc = nova_poc:main']
     }
 )
 
