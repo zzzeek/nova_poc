@@ -68,8 +68,8 @@ Win #2 - Persist Objects Directly without the Unit of Work
 
 This second win was oddly not as dramatic as I'd hoped, however it is helpful
 and easy to implement nonetheless.   Openstack applications seem to rely a
-lot on a pattern that involves short "save this object" methods.
-When I first looked at oslo.db and saw that there is actually a ``.save()`` method
+lot on a pattern that involves short "save this object" methods; I first
+noticed this when I looked at oslo.db and saw that there is actually a ``.save()`` method
 tacked onto the base model class.   This pattern is one that I mention a lot
 in my talks, as I'm trying to sell the unit of work pattern as a more sophisticated
 and powerful pattern.   But when the application is already broken into a series
@@ -84,7 +84,7 @@ needs to just UPDATE or INSERT a single row, or maybe a handful of simple rows,
 then commit the whole transaction, the UOW can be overkill.
 
 So for the quick "Save this object" pattern I've proposed the
-`single flush_object() <https://bitbucket.org/zzzeek/sqlalchemy/issue/3100/sessionflush_object>`_,
+`single flush_object() <https://bitbucket.org/zzzeek/sqlalchemy/issue/3100/sessionflush_object>`_
 feature for SQLAlchemy.   A function that has a small number of simple objects
 to persist can call this method, and a trimmed down persist operation will take
 place, bypassing the whole mechanics of flush and unit of work and going directly
